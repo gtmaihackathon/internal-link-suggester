@@ -408,12 +408,32 @@ def main():
         st.header("⚙️ Settings")
         
         url_count = len(st.session_state.db.get_all_urls())
-        st.markdown(f"""
-        <div class="metric-card">
-            <h3>{url_count}</h3>
-            <p>URLs in Database</p>
-        </div>
-        """, unsafe_allow_html=True)
+        
+        # Status indicator
+        if url_count > 0:
+            st.markdown(f"""
+            <div class="metric-card" style="background: linear-gradient(135deg, #28a745 0%, #20c997 100%);">
+                <h3>{url_count}</h3>
+                <p>URLs Ready ✅</p>
+            </div>
+            """, unsafe_allow_html=True)
+        else:
+            # Check if file exists
+            file_info = get_uploaded_file_info()
+            if file_info['exists']:
+                st.markdown(f"""
+                <div class="metric-card" style="background: linear-gradient(135deg, #ffc107 0%, #ff9800 100%);">
+                    <h3>⚠️</h3>
+                    <p>File Uploaded<br>Need to Import!</p>
+                </div>
+                """, unsafe_allow_html=True)
+            else:
+                st.markdown(f"""
+                <div class="metric-card" style="background: linear-gradient(135deg, #dc3545 0%, #c82333 100%);">
+                    <h3>0</h3>
+                    <p>No URLs Yet</p>
+                </div>
+                """, unsafe_allow_html=True)
         
         st.divider()
         
@@ -437,24 +457,37 @@ def main():
             # Show current file info
             file_info = get_uploaded_file_info()
             if file_info['exists']:
-                st.info(f"""
-                📁 **Current file:** {file_info['name']}  
+                st.success(f"""
+                ✅ **File uploaded:** {file_info['name']}  
                 📊 **Size:** {file_info['size'] / 1024:.1f} KB  
                 🕒 **Uploaded:** {file_info['modified'].strftime('%Y-%m-%d %H:%M')}
                 """)
                 
+                # Check if database is empty
+                current_url_count = len(st.session_state.db.get_all_urls())
+                
+                if current_url_count == 0:
+                    st.warning("⚠️ **File uploaded but URLs not imported yet!**")
+                    st.info("👇 Click the button below to load URLs from your file:")
+                
                 col1, col2 = st.columns(2)
                 with col1:
-                    if st.button("🔄 Reload from File", use_container_width=True):
-                        with st.spinner("Loading URLs from file..."):
+                    if st.button("📥 LOAD URLs FROM FILE", 
+                               use_container_width=True,
+                               type="primary",
+                               key="reload_from_file"):
+                        with st.spinner("📥 Loading URLs from file..."):
                             imported, errors = import_urls_from_file(file_info['path'], st.session_state.db)
                         
                         if imported > 0:
-                            st.success(f"✅ Loaded {imported} URLs from file!")
+                            st.success(f"✅ Loaded {imported} URLs into database!")
+                            st.balloons()
+                        else:
+                            st.error("❌ No URLs were loaded")
                         
                         if errors:
                             with st.expander("⚠️ View Errors"):
-                                for error in errors[:10]:  # Show first 10 errors
+                                for error in errors[:10]:
                                     st.caption(error)
                         
                         st.rerun()
@@ -484,23 +517,40 @@ def main():
                     # Normalize columns
                     df.columns = df.columns.str.lower().str.strip()
                     
-                    st.write(f"**Preview** ({len(df)} rows)")
+                    st.write(f"**📊 Preview** ({len(df)} rows found)")
                     st.dataframe(df.head(3), use_container_width=True)
                     
-                    # Import button
-                    col1, col2 = st.columns([2, 1])
-                    with col1:
-                        if st.button("📥 Import URLs from File", use_container_width=True, type="primary"):
+                    # Check for required columns
+                    required_cols = ['url', 'title', 'h1']
+                    missing_cols = [col for col in required_cols if col not in df.columns]
+                    
+                    if missing_cols:
+                        st.error(f"❌ Missing required columns: {', '.join(missing_cols)}")
+                        st.info("Required: url, title, h1")
+                    else:
+                        st.success(f"✅ All required columns found!")
+                        
+                        # Import button
+                        st.markdown("---")
+                        st.markdown("**⚠️ IMPORTANT:** Click the button below to import URLs into database")
+                        
+                        if st.button("📥 IMPORT URLs INTO DATABASE", 
+                                   use_container_width=True, 
+                                   type="primary",
+                                   key="import_urls_button"):
                             # Save file
-                            with st.spinner("Saving file..."):
+                            with st.spinner("💾 Saving file..."):
                                 file_path = save_uploaded_file(uploaded_file)
                             
                             # Import URLs
-                            with st.spinner("Importing URLs..."):
+                            with st.spinner("📥 Importing URLs into database..."):
                                 imported, errors = import_urls_from_file(file_path, st.session_state.db)
                             
                             if imported > 0:
-                                st.success(f"✅ Successfully imported {imported} URLs!")
+                                st.success(f"✅ Successfully imported {imported} URLs into database!")
+                                st.balloons()
+                            else:
+                                st.error("❌ No URLs were imported")
                             
                             if errors:
                                 st.warning(f"⚠️ {len(errors)} errors occurred")
@@ -508,33 +558,36 @@ def main():
                                     for error in errors[:10]:
                                         st.caption(error)
                             
+                            st.info("👉 Now you can analyze your content!")
                             st.rerun()
                     
-                    with col2:
-                        # Download template
-                        template_data = {
-                            'url': ['https://example.com/page1', 'https://example.com/page2'],
-                            'title': ['Page 1 Title', 'Page 2 Title'],
-                            'h1': ['Main Heading 1', 'Main Heading 2'],
-                            'meta_description': ['Description 1', 'Description 2'],
-                            'h2': ['H2-1; H2-2', 'H2-A; H2-B']
-                        }
-                        template_df = pd.DataFrame(template_data)
-                        
-                        # Convert to Excel bytes
-                        from io import BytesIO
-                        output = BytesIO()
-                        with pd.ExcelWriter(output, engine='openpyxl') as writer:
-                            template_df.to_excel(writer, index=False, sheet_name='URLs')
-                        excel_data = output.getvalue()
-                        
-                        st.download_button(
-                            "📄 Template",
-                            excel_data,
-                            file_name="url_template.xlsx",
-                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                            use_container_width=True
-                        )
+                    # Download template button
+                    st.markdown("---")
+                    st.markdown("**Need a template?**")
+                    
+                    template_data = {
+                        'url': ['https://example.com/page1', 'https://example.com/page2'],
+                        'title': ['Page 1 Title', 'Page 2 Title'],
+                        'h1': ['Main Heading 1', 'Main Heading 2'],
+                        'meta_description': ['Description 1', 'Description 2'],
+                        'h2': ['H2-1; H2-2', 'H2-A; H2-B']
+                    }
+                    template_df = pd.DataFrame(template_data)
+                    
+                    # Convert to Excel bytes
+                    from io import BytesIO
+                    output = BytesIO()
+                    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                        template_df.to_excel(writer, index=False, sheet_name='URLs')
+                    excel_data = output.getvalue()
+                    
+                    st.download_button(
+                        "📄 Download Template",
+                        excel_data,
+                        file_name="url_template.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        use_container_width=True
+                    )
                 
                 except Exception as e:
                     st.error(f"❌ Error reading file: {str(e)}")
@@ -599,7 +652,14 @@ def main():
             if not content:
                 st.error("⚠️ Please paste some content first")
             elif url_count == 0:
-                st.error("⚠️ Please add URLs to the database first")
+                # Check if there's an uploaded file
+                file_info = get_uploaded_file_info()
+                if file_info['exists']:
+                    st.error("⚠️ File uploaded but URLs not loaded into database!")
+                    st.info("👉 Go to sidebar → 'Upload Excel/CSV File' → Click '📥 LOAD URLs FROM FILE'")
+                else:
+                    st.error("⚠️ Please add URLs to the database first")
+                    st.info("👉 Upload a file or add URLs manually in the sidebar")
             else:
                 with st.spinner("🔍 Analyzing content..."):
                     urls = st.session_state.db.get_all_urls()
