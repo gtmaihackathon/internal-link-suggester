@@ -3,10 +3,11 @@ import json
 import os
 from datetime import datetime
 import re
-from typing import List, Dict, Tuple
+from typing import List, Dict
 import numpy as np
-from sentence_transformers import SentenceTransformer, util
-from collections import defaultdict
+import pandas as pd
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.metrics.pairwise import cosine_similarity
 
 # Page config
 st.set_page_config(
@@ -16,7 +17,7 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Custom CSS for better UI
+# Custom CSS (same as before)
 st.markdown("""
 <style>
     .main-header {
@@ -32,13 +33,6 @@ st.markdown("""
         font-size: 1.1rem;
         margin-bottom: 2rem;
     }
-    .url-card {
-        background: #f8f9fa;
-        padding: 1rem;
-        border-radius: 8px;
-        border-left: 4px solid #2E86AB;
-        margin-bottom: 0.5rem;
-    }
     .suggestion-card {
         background: white;
         padding: 1.5rem;
@@ -46,10 +40,6 @@ st.markdown("""
         border: 2px solid #e0e0e0;
         margin-bottom: 1rem;
         box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-    }
-    .suggestion-card:hover {
-        border-color: #2E86AB;
-        box-shadow: 0 4px 8px rgba(0,0,0,0.15);
     }
     .score-badge {
         display: inline-block;
@@ -70,19 +60,6 @@ st.markdown("""
         background: #f8d7da;
         color: #721c24;
     }
-    .stButton>button {
-        border-radius: 6px;
-        font-weight: 600;
-        transition: all 0.3s;
-    }
-    .accept-btn {
-        background: #28a745 !important;
-        color: white !important;
-    }
-    .reject-btn {
-        background: #dc3545 !important;
-        color: white !important;
-    }
     .metric-card {
         background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
         padding: 1rem;
@@ -93,9 +70,8 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# Database file path
 DB_FILE = "url_database.json"
-MODEL_NAME = 'all-MiniLM-L6-v2'
+UPLOADED_FILE_PATH = "uploaded_urls_file"  # Stores the uploaded file
 
 class URLDatabase:
     def __init__(self, db_file: str):
@@ -103,20 +79,17 @@ class URLDatabase:
         self.data = self.load()
     
     def load(self) -> Dict:
-        """Load database from file"""
         if os.path.exists(self.db_file):
             with open(self.db_file, 'r', encoding='utf-8') as f:
                 return json.load(f)
         return {"urls": {}, "last_updated": None}
     
     def save(self):
-        """Save database to file"""
         self.data["last_updated"] = datetime.now().isoformat()
         with open(self.db_file, 'w', encoding='utf-8') as f:
             json.dump(self.data, f, indent=2, ensure_ascii=False)
     
     def add_url(self, url: str, h1: str, h2: List[str], title: str, meta_desc: str):
-        """Add or update a URL in the database"""
         self.data["urls"][url] = {
             "h1": h1,
             "h2": h2,
@@ -127,32 +100,141 @@ class URLDatabase:
         self.save()
     
     def get_all_urls(self) -> Dict:
-        """Get all URLs"""
         return self.data.get("urls", {})
     
     def delete_url(self, url: str):
-        """Delete a URL from database"""
         if url in self.data["urls"]:
             del self.data["urls"][url]
             self.save()
     
     def clear_all(self):
-        """Clear all URLs"""
         self.data = {"urls": {}, "last_updated": None}
         self.save()
 
-class LinkSuggester:
-    def __init__(self):
-        self.model = self._load_model()
+def save_uploaded_file(uploaded_file) -> str:
+    """Save uploaded file to disk and return the path"""
+    # Determine file extension
+    file_extension = os.path.splitext(uploaded_file.name)[1]
+    file_path = f"{UPLOADED_FILE_PATH}{file_extension}"
     
-    @st.cache_resource
-    def _load_model(_self):
-        """Load sentence transformer model"""
-        return SentenceTransformer(MODEL_NAME)
+    # Save file
+    with open(file_path, "wb") as f:
+        f.write(uploaded_file.getbuffer())
+    
+    return file_path
+
+def get_uploaded_file_info() -> Dict:
+    """Get info about the currently uploaded file"""
+    # Check for common file extensions
+    for ext in ['.xlsx', '.xls', '.csv']:
+        file_path = f"{UPLOADED_FILE_PATH}{ext}"
+        if os.path.exists(file_path):
+            file_size = os.path.getsize(file_path)
+            modified_time = datetime.fromtimestamp(os.path.getmtime(file_path))
+            return {
+                'path': file_path,
+                'name': os.path.basename(file_path),
+                'size': file_size,
+                'modified': modified_time,
+                'exists': True
+            }
+    return {'exists': False}
+
+def delete_uploaded_file():
+    """Delete the uploaded file"""
+    for ext in ['.xlsx', '.xls', '.csv']:
+        file_path = f"{UPLOADED_FILE_PATH}{ext}"
+        if os.path.exists(file_path):
+            os.remove(file_path)
+            return True
+    return False
+
+def parse_uploaded_file(file_path: str) -> pd.DataFrame:
+    """Parse Excel or CSV file and return DataFrame"""
+    try:
+        if file_path.endswith('.csv'):
+            df = pd.read_csv(file_path)
+        else:  # .xlsx or .xls
+            df = pd.read_excel(file_path)
+        return df
+    except Exception as e:
+        st.error(f"Error reading file: {str(e)}")
+        return None
+
+def import_urls_from_file(file_path: str, db: URLDatabase) -> tuple:
+    """Import URLs from uploaded file into database"""
+    df = parse_uploaded_file(file_path)
+    
+    if df is None:
+        return 0, []
+    
+    # Expected columns (case-insensitive)
+    required_cols = ['url', 'title', 'h1']
+    optional_cols = ['meta_description', 'h2']
+    
+    # Normalize column names to lowercase
+    df.columns = df.columns.str.lower().str.strip()
+    
+    # Check for required columns
+    missing_cols = [col for col in required_cols if col not in df.columns]
+    if missing_cols:
+        return 0, [f"Missing required columns: {', '.join(missing_cols)}"]
+    
+    # Add optional columns if missing
+    for col in optional_cols:
+        if col not in df.columns:
+            df[col] = ''
+    
+    imported = 0
+    errors = []
+    
+    for idx, row in df.iterrows():
+        try:
+            url = str(row['url']).strip()
+            title = str(row['title']).strip()
+            h1 = str(row['h1']).strip()
+            
+            # Validate required fields
+            if not url or url == 'nan' or not title or title == 'nan' or not h1 or h1 == 'nan':
+                errors.append(f"Row {idx + 2}: Missing required field (URL, Title, or H1)")
+                continue
+            
+            # Parse H2 (can be semicolon or comma separated)
+            h2_raw = str(row.get('h2', ''))
+            if h2_raw and h2_raw != 'nan':
+                # Try semicolon first, then comma
+                if ';' in h2_raw:
+                    h2_list = [h.strip() for h in h2_raw.split(';') if h.strip()]
+                else:
+                    h2_list = [h.strip() for h in h2_raw.split(',') if h.strip()]
+            else:
+                h2_list = []
+            
+            # Get meta description
+            meta_desc = str(row.get('meta_description', '')).strip()
+            if meta_desc == 'nan':
+                meta_desc = ''
+            
+            # Add to database
+            db.add_url(url, h1, h2_list, title, meta_desc)
+            imported += 1
+            
+        except Exception as e:
+            errors.append(f"Row {idx + 2}: {str(e)}")
+    
+    return imported, errors
+
+class LinkSuggester:
+    """Lightweight version using TF-IDF instead of sentence transformers"""
+    
+    def __init__(self):
+        self.vectorizer = TfidfVectorizer(
+            max_features=1000,
+            ngram_range=(1, 3),
+            stop_words='english'
+        )
     
     def extract_text_chunks(self, content: str, chunk_size: int = 200) -> List[Dict]:
-        """Extract meaningful text chunks from content"""
-        # Split into sentences
         sentences = re.split(r'[.!?]+', content)
         chunks = []
         current_chunk = ""
@@ -182,42 +264,45 @@ class LinkSuggester:
         
         return chunks
     
-    def calculate_relevance_score(self, content_embedding, url_embedding, 
+    def calculate_relevance_score(self, content_text: str, url_text: str, 
                                    url_data: Dict, content: str) -> float:
-        """Calculate comprehensive relevance score"""
-        # Cosine similarity score (0-1)
-        cosine_score = util.cos_sim(content_embedding, url_embedding).item()
+        # Combine texts for TF-IDF
+        texts = [content_text, url_text]
         
-        # Boost score based on keyword overlap
-        content_lower = content.lower()
-        url_text = f"{url_data.get('h1', '')} {url_data.get('title', '')} {' '.join(url_data.get('h2', []))}".lower()
-        
-        # Extract keywords (simple approach)
-        content_words = set(re.findall(r'\b\w{4,}\b', content_lower))
-        url_words = set(re.findall(r'\b\w{4,}\b', url_text))
-        
-        if content_words:
-            keyword_overlap = len(content_words & url_words) / len(content_words)
-        else:
-            keyword_overlap = 0
-        
-        # Weighted final score
-        final_score = (cosine_score * 0.7) + (keyword_overlap * 0.3)
-        
-        return final_score
+        try:
+            # Calculate TF-IDF vectors
+            tfidf_matrix = self.vectorizer.fit_transform(texts)
+            
+            # Calculate cosine similarity
+            similarity = cosine_similarity(tfidf_matrix[0:1], tfidf_matrix[1:2])[0][0]
+            
+            # Keyword overlap boost
+            content_lower = content.lower()
+            url_text_lower = url_text.lower()
+            
+            content_words = set(re.findall(r'\b\w{4,}\b', content_lower))
+            url_words = set(re.findall(r'\b\w{4,}\b', url_text_lower))
+            
+            if content_words:
+                keyword_overlap = len(content_words & url_words) / len(content_words)
+            else:
+                keyword_overlap = 0
+            
+            # Weighted score
+            final_score = (similarity * 0.7) + (keyword_overlap * 0.3)
+            
+            return final_score
+        except:
+            return 0.0
     
     def suggest_anchor_text(self, chunk: str, url_data: Dict) -> str:
-        """Suggest appropriate anchor text based on context"""
         chunk_lower = chunk.lower()
         
-        # Check for exact or close matches with h1, title
         h1 = url_data.get('h1', '').lower()
         title = url_data.get('title', '').lower()
         
-        # Look for natural phrase matches
         candidates = []
         
-        # Try to find h1 or title in the chunk
         if h1 and h1 in chunk_lower:
             start = chunk_lower.index(h1)
             candidates.append(chunk[start:start+len(h1)])
@@ -226,7 +311,6 @@ class LinkSuggester:
             start = chunk_lower.index(title)
             candidates.append(chunk[start:start+len(title)])
         
-        # Look for h2 matches
         for h2 in url_data.get('h2', []):
             h2_lower = h2.lower()
             if h2_lower in chunk_lower:
@@ -234,69 +318,58 @@ class LinkSuggester:
                 candidates.append(chunk[start:start+len(h2)])
         
         if candidates:
-            # Return the longest match
             return max(candidates, key=len)
         
-        # Fall back to h1 or title
         return url_data.get('h1', url_data.get('title', 'Learn more'))
     
     def generate_suggestions(self, content: str, url_database: Dict, 
                            max_suggestions: int = 15) -> List[Dict]:
-        """Generate internal link suggestions using semantic analysis"""
         if not url_database:
             return []
         
-        # Extract chunks from content
         chunks = self.extract_text_chunks(content)
         
-        # Prepare URL data for embedding
+        # Prepare URL texts
         url_texts = {}
         for url, data in url_database.items():
-            # Combine all text fields for better semantic understanding
             combined_text = f"{data.get('title', '')}. {data.get('h1', '')}. {data.get('meta_description', '')}. {' '.join(data.get('h2', []))}"
             url_texts[url] = combined_text
         
-        # Generate embeddings
-        chunk_embeddings = self.model.encode([chunk['text'] for chunk in chunks])
-        url_embeddings = self.model.encode(list(url_texts.values()))
-        
-        # Find best matches for each chunk
         suggestions = []
         url_list = list(url_database.keys())
         
-        for i, chunk in enumerate(chunks):
-            chunk_embedding = chunk_embeddings[i]
+        for chunk in chunks:
+            chunk_text = chunk['text']
             
             # Calculate scores for all URLs
             scores = []
-            for j, url in enumerate(url_list):
+            for url in url_list:
                 score = self.calculate_relevance_score(
-                    chunk_embedding,
-                    url_embeddings[j],
+                    chunk_text,
+                    url_texts[url],
                     url_database[url],
-                    chunk['text']
+                    chunk_text
                 )
                 scores.append((url, score))
             
-            # Get top matches for this chunk
+            # Get top matches
             scores.sort(key=lambda x: x[1], reverse=True)
             
-            # Add top 2-3 suggestions per chunk
             for url, score in scores[:2]:
-                if score > 0.3:  # Minimum threshold
-                    anchor = self.suggest_anchor_text(chunk['text'], url_database[url])
+                if score > 0.25:  # Lower threshold for TF-IDF
+                    anchor = self.suggest_anchor_text(chunk_text, url_database[url])
                     
                     suggestions.append({
                         'url': url,
                         'anchor_text': anchor,
-                        'context': chunk['text'][:150] + "...",
+                        'context': chunk_text[:150] + "...",
                         'score': score,
                         'position': chunk['position'],
                         'target_h1': url_database[url].get('h1', ''),
                         'target_title': url_database[url].get('title', '')
                     })
         
-        # Remove duplicates and sort by score
+        # Remove duplicates and sort
         seen_urls = set()
         unique_suggestions = []
         for sugg in sorted(suggestions, key=lambda x: x['score'], reverse=True):
@@ -328,13 +401,12 @@ def main():
     
     # Header
     st.markdown('<h1 class="main-header">🔗 Smart Internal Link Suggester</h1>', unsafe_allow_html=True)
-    st.markdown('<p class="sub-header">AI-powered semantic analysis for intelligent internal linking</p>', unsafe_allow_html=True)
+    st.markdown('<p class="sub-header">Upload Excel/CSV or add URLs manually • AI-powered link suggestions</p>', unsafe_allow_html=True)
     
     # Sidebar
     with st.sidebar:
         st.header("⚙️ Settings")
         
-        # Database stats
         url_count = len(st.session_state.db.get_all_urls())
         st.markdown(f"""
         <div class="metric-card">
@@ -345,10 +417,129 @@ def main():
         
         st.divider()
         
-        # URL Management
         st.subheader("📚 Manage URLs")
         
-        with st.expander("➕ Add New URL", expanded=False):
+        # File Upload Section
+        with st.expander("📤 Upload Excel/CSV File", expanded=False):
+            st.markdown("""
+            **Upload a file with your URLs and metadata**
+            
+            Required columns:
+            - `url` - Full URL
+            - `title` - Page title (meta title)
+            - `h1` - Main H1 heading
+            
+            Optional columns:
+            - `meta_description` - Meta description
+            - `h2` - H2 headings (separate with ; or ,)
+            """)
+            
+            # Show current file info
+            file_info = get_uploaded_file_info()
+            if file_info['exists']:
+                st.info(f"""
+                📁 **Current file:** {file_info['name']}  
+                📊 **Size:** {file_info['size'] / 1024:.1f} KB  
+                🕒 **Uploaded:** {file_info['modified'].strftime('%Y-%m-%d %H:%M')}
+                """)
+                
+                col1, col2 = st.columns(2)
+                with col1:
+                    if st.button("🔄 Reload from File", use_container_width=True):
+                        with st.spinner("Loading URLs from file..."):
+                            imported, errors = import_urls_from_file(file_info['path'], st.session_state.db)
+                        
+                        if imported > 0:
+                            st.success(f"✅ Loaded {imported} URLs from file!")
+                        
+                        if errors:
+                            with st.expander("⚠️ View Errors"):
+                                for error in errors[:10]:  # Show first 10 errors
+                                    st.caption(error)
+                        
+                        st.rerun()
+                
+                with col2:
+                    if st.button("🗑️ Remove File", use_container_width=True):
+                        if delete_uploaded_file():
+                            st.success("✅ File removed!")
+                            st.rerun()
+            
+            # File uploader
+            uploaded_file = st.file_uploader(
+                "Choose Excel or CSV file",
+                type=['xlsx', 'xls', 'csv'],
+                help="Upload your file with URL data",
+                key="url_file_uploader"
+            )
+            
+            if uploaded_file is not None:
+                # Show preview
+                try:
+                    if uploaded_file.name.endswith('.csv'):
+                        df = pd.read_csv(uploaded_file)
+                    else:
+                        df = pd.read_excel(uploaded_file)
+                    
+                    # Normalize columns
+                    df.columns = df.columns.str.lower().str.strip()
+                    
+                    st.write(f"**Preview** ({len(df)} rows)")
+                    st.dataframe(df.head(3), use_container_width=True)
+                    
+                    # Import button
+                    col1, col2 = st.columns([2, 1])
+                    with col1:
+                        if st.button("📥 Import URLs from File", use_container_width=True, type="primary"):
+                            # Save file
+                            with st.spinner("Saving file..."):
+                                file_path = save_uploaded_file(uploaded_file)
+                            
+                            # Import URLs
+                            with st.spinner("Importing URLs..."):
+                                imported, errors = import_urls_from_file(file_path, st.session_state.db)
+                            
+                            if imported > 0:
+                                st.success(f"✅ Successfully imported {imported} URLs!")
+                            
+                            if errors:
+                                st.warning(f"⚠️ {len(errors)} errors occurred")
+                                with st.expander("View Errors"):
+                                    for error in errors[:10]:
+                                        st.caption(error)
+                            
+                            st.rerun()
+                    
+                    with col2:
+                        # Download template
+                        template_data = {
+                            'url': ['https://example.com/page1', 'https://example.com/page2'],
+                            'title': ['Page 1 Title', 'Page 2 Title'],
+                            'h1': ['Main Heading 1', 'Main Heading 2'],
+                            'meta_description': ['Description 1', 'Description 2'],
+                            'h2': ['H2-1; H2-2', 'H2-A; H2-B']
+                        }
+                        template_df = pd.DataFrame(template_data)
+                        
+                        # Convert to Excel bytes
+                        from io import BytesIO
+                        output = BytesIO()
+                        with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                            template_df.to_excel(writer, index=False, sheet_name='URLs')
+                        excel_data = output.getvalue()
+                        
+                        st.download_button(
+                            "📄 Template",
+                            excel_data,
+                            file_name="url_template.xlsx",
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            use_container_width=True
+                        )
+                
+                except Exception as e:
+                    st.error(f"❌ Error reading file: {str(e)}")
+        
+        with st.expander("➕ Add Single URL", expanded=False):
             with st.form("add_url_form"):
                 url = st.text_input("URL*", placeholder="https://example.com/page")
                 title = st.text_input("Page Title*", placeholder="Complete Guide to...")
@@ -387,7 +578,7 @@ def main():
                 st.session_state.db.clear_all()
                 st.rerun()
     
-    # Main content area
+    # Main content
     tab1, tab2 = st.tabs(["📝 Content Analysis", "📊 Results"])
     
     with tab1:
@@ -396,7 +587,7 @@ def main():
         content = st.text_area(
             "Content to analyze",
             height=300,
-            placeholder="Paste your article or content here...\n\nThe tool will analyze your content and suggest relevant internal links based on semantic similarity with your URL database.",
+            placeholder="Paste your article or content here...",
             help="Paste the content you want to add internal links to"
         )
         
@@ -410,7 +601,7 @@ def main():
             elif url_count == 0:
                 st.error("⚠️ Please add URLs to the database first")
             else:
-                with st.spinner("🤖 Analyzing content with AI..."):
+                with st.spinner("🔍 Analyzing content..."):
                     urls = st.session_state.db.get_all_urls()
                     suggestions = st.session_state.suggester.generate_suggestions(
                         content, urls, max_suggestions
@@ -427,7 +618,6 @@ def main():
         if st.session_state.suggestions:
             st.subheader(f"📊 Link Suggestions ({len(st.session_state.suggestions)} found)")
             
-            # Summary metrics
             col1, col2, col3 = st.columns(3)
             with col1:
                 st.metric("Total Suggestions", len(st.session_state.suggestions))
@@ -447,12 +637,11 @@ def main():
                     st.success(f"✅ Accepted: {suggestion['anchor_text']} → {suggestion['url']}")
                     continue
                 
-                # Score badge
                 score = suggestion['score']
-                if score >= 0.7:
+                if score >= 0.6:
                     score_class = "score-high"
                     score_label = "High Relevance"
-                elif score >= 0.5:
+                elif score >= 0.4:
                     score_class = "score-medium"
                     score_label = "Medium Relevance"
                 else:
@@ -499,22 +688,15 @@ def main():
             if st.session_state.accepted_links:
                 st.subheader("📄 Final Document")
                 
-                # Create document with accepted links
                 final_content = st.session_state.current_content
                 
-                # Sort by position (reverse to maintain correct indices)
                 accepted_suggestions = [s for s in st.session_state.suggestions 
                                       if s['url'] in st.session_state.accepted_links]
                 
                 for suggestion in accepted_suggestions:
-                    # Find the anchor text in content and replace with link
                     anchor = suggestion['anchor_text']
                     url = suggestion['url']
-                    
-                    # Create HTML link
                     link_html = f'<a href="{url}">{anchor}</a>'
-                    
-                    # Replace first occurrence near the position
                     final_content = final_content.replace(anchor, link_html, 1)
                 
                 st.code(final_content, language="html")
