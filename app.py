@@ -89,12 +89,13 @@ class URLDatabase:
         with open(self.db_file, 'w', encoding='utf-8') as f:
             json.dump(self.data, f, indent=2, ensure_ascii=False)
     
-    def add_url(self, url: str, h1: str, h2: List[str], title: str, meta_desc: str):
+    def add_url(self, url: str, h1: str, h2: List[str], title: str, meta_desc: str, page_type: str = "Other"):
         self.data["urls"][url] = {
             "h1": h1,
             "h2": h2,
             "title": title,
             "meta_description": meta_desc,
+            "page_type": page_type,
             "added_date": datetime.now().isoformat()
         }
         self.save()
@@ -170,7 +171,7 @@ def import_urls_from_file(file_path: str, db: URLDatabase) -> tuple:
     
     # Expected columns (case-insensitive)
     required_cols = ['url', 'title', 'h1']
-    optional_cols = ['meta_description', 'h2']
+    optional_cols = ['meta_description', 'h2', 'page_type', 'type', 'category']
     
     # Normalize column names to lowercase
     df.columns = df.columns.str.lower().str.strip()
@@ -215,14 +216,54 @@ def import_urls_from_file(file_path: str, db: URLDatabase) -> tuple:
             if meta_desc == 'nan':
                 meta_desc = ''
             
+            # Get or detect page type
+            page_type = str(row.get('page_type', row.get('type', row.get('category', '')))).strip()
+            if page_type == 'nan' or not page_type:
+                # Auto-detect from URL and title
+                page_type = detect_page_type(url, title, h1)
+            
             # Add to database
-            db.add_url(url, h1, h2_list, title, meta_desc)
+            db.add_url(url, h1, h2_list, title, meta_desc, page_type)
             imported += 1
             
         except Exception as e:
             errors.append(f"Row {idx + 2}: {str(e)}")
     
     return imported, errors
+
+def detect_page_type(url: str, title: str, h1: str) -> str:
+    """Auto-detect page type from URL, title, and H1"""
+    url_lower = url.lower()
+    title_lower = title.lower()
+    h1_lower = h1.lower()
+    
+    combined = f"{url_lower} {title_lower} {h1_lower}"
+    
+    # Check for product pages
+    if any(word in combined for word in ['product', '/product/', '/shop/', 'buy', 'price', '/item/']):
+        return "Product"
+    
+    # Check for glossary/definition pages
+    if any(word in combined for word in ['glossary', 'definition', 'what is', 'meaning of', '/glossary/', '/define/']):
+        return "Glossary"
+    
+    # Check for guide pages
+    if any(word in combined for word in ['guide', 'tutorial', 'how to', 'step by step', 'complete guide', 'ultimate guide']):
+        return "Guide"
+    
+    # Check for blog pages
+    if any(word in combined for word in ['/blog/', 'article', '/post/', '/news/', 'tips']):
+        return "Blog"
+    
+    # Check for category pages
+    if any(word in combined for word in ['category', 'categories', '/cat/', 'collection']):
+        return "Category"
+    
+    # Check for landing pages
+    if any(word in combined for word in ['landing', 'services', 'solutions']):
+        return "Landing Page"
+    
+    return "Other"
 
 class LinkSuggester:
     """Lightweight version using TF-IDF instead of sentence transformers"""
@@ -329,15 +370,23 @@ class LinkSuggester:
         
         chunks = self.extract_text_chunks(content)
         
-        # Prepare URL texts
+        # Prepare URL texts and organize by page type
         url_texts = {}
+        url_by_type = {}
+        
         for url, data in url_database.items():
             combined_text = f"{data.get('title', '')}. {data.get('h1', '')}. {data.get('meta_description', '')}. {' '.join(data.get('h2', []))}"
             url_texts[url] = combined_text
+            
+            page_type = data.get('page_type', 'Other')
+            if page_type not in url_by_type:
+                url_by_type[page_type] = []
+            url_by_type[page_type].append(url)
         
-        suggestions = []
+        all_suggestions = []
         url_list = list(url_database.keys())
         
+        # Process each chunk
         for chunk in chunks:
             chunk_text = chunk['text']
             
@@ -350,37 +399,86 @@ class LinkSuggester:
                     url_database[url],
                     chunk_text
                 )
+                
+                # Boost score based on page type diversity
+                page_type = url_database[url].get('page_type', 'Other')
+                
+                # Slight boost for non-blog pages to ensure diversity
+                if page_type in ['Product', 'Glossary', 'Guide']:
+                    score *= 1.1
+                elif page_type == 'Landing Page':
+                    score *= 1.05
+                
                 scores.append((url, score))
             
-            # Get top matches
+            # Get top matches for this chunk
             scores.sort(key=lambda x: x[1], reverse=True)
             
-            for url, score in scores[:2]:
-                if score > 0.25:  # Lower threshold for TF-IDF
+            # Add top 3 suggestions per chunk
+            for url, score in scores[:3]:
+                if score > 0.20:  # Lower threshold for more suggestions
                     anchor = self.suggest_anchor_text(chunk_text, url_database[url])
                     
-                    suggestions.append({
+                    all_suggestions.append({
                         'url': url,
                         'anchor_text': anchor,
                         'context': chunk_text[:150] + "...",
                         'score': score,
                         'position': chunk['position'],
                         'target_h1': url_database[url].get('h1', ''),
-                        'target_title': url_database[url].get('title', '')
+                        'target_title': url_database[url].get('title', ''),
+                        'page_type': url_database[url].get('page_type', 'Other')
                     })
         
-        # Remove duplicates and sort
+        # Deduplicate and ensure diversity
         seen_urls = set()
-        unique_suggestions = []
-        for sugg in sorted(suggestions, key=lambda x: x['score'], reverse=True):
-            if sugg['url'] not in seen_urls:
-                seen_urls.add(sugg['url'])
-                unique_suggestions.append(sugg)
-            
-            if len(unique_suggestions) >= max_suggestions:
-                break
+        diverse_suggestions = []
+        page_type_counts = {}
         
-        return unique_suggestions
+        # Sort by score
+        all_suggestions.sort(key=lambda x: x['score'], reverse=True)
+        
+        # First pass: Add high-scoring suggestions (>0.5) ensuring diversity
+        for sugg in all_suggestions:
+            if sugg['url'] in seen_urls:
+                continue
+            
+            page_type = sugg['page_type']
+            
+            # Limit suggestions per page type to ensure diversity
+            type_count = page_type_counts.get(page_type, 0)
+            
+            # Allow more for diverse types, limit blog to 40% of total
+            if page_type == 'Blog' and type_count >= max_suggestions * 0.4:
+                continue
+            elif type_count >= max_suggestions * 0.5:
+                continue
+            
+            if sugg['score'] > 0.35:  # Higher threshold for first pass
+                seen_urls.add(sugg['url'])
+                diverse_suggestions.append(sugg)
+                page_type_counts[page_type] = type_count + 1
+                
+                if len(diverse_suggestions) >= max_suggestions:
+                    break
+        
+        # Second pass: Fill remaining slots with any good matches
+        if len(diverse_suggestions) < max_suggestions:
+            for sugg in all_suggestions:
+                if sugg['url'] in seen_urls:
+                    continue
+                
+                if sugg['score'] > 0.25:  # Lower threshold
+                    seen_urls.add(sugg['url'])
+                    diverse_suggestions.append(sugg)
+                    
+                    if len(diverse_suggestions) >= max_suggestions:
+                        break
+        
+        # Sort final results by score
+        diverse_suggestions.sort(key=lambda x: x['score'], reverse=True)
+        
+        return diverse_suggestions[:max_suggestions]
 
 def main():
     # Initialize session state
@@ -566,11 +664,12 @@ def main():
                     st.markdown("**Need a template?**")
                     
                     template_data = {
-                        'url': ['https://example.com/page1', 'https://example.com/page2'],
-                        'title': ['Page 1 Title', 'Page 2 Title'],
-                        'h1': ['Main Heading 1', 'Main Heading 2'],
-                        'meta_description': ['Description 1', 'Description 2'],
-                        'h2': ['H2-1; H2-2', 'H2-A; H2-B']
+                        'url': ['https://example.com/seo-guide', 'https://example.com/keyword-tool'],
+                        'title': ['SEO Guide 2024', 'Keyword Research Tool'],
+                        'h1': ['Complete SEO Guide', 'Find Keywords Fast'],
+                        'meta_description': ['Learn SEO basics and advanced techniques', 'Discover profitable keywords for your content'],
+                        'h2': ['Basics; Advanced; Tools', 'Features; Pricing'],
+                        'page_type': ['Guide', 'Product']
                     }
                     template_df = pd.DataFrame(template_data)
                     
@@ -600,12 +699,18 @@ def main():
                 h2_input = st.text_area("H2 Headings (one per line)", placeholder="Subheading 1\nSubheading 2")
                 meta_desc = st.text_area("Meta Description", placeholder="Brief description...")
                 
+                page_type = st.selectbox(
+                    "Page Type*",
+                    options=["Blog", "Product", "Glossary", "Guide", "Category", "Landing Page", "Other"],
+                    help="Select the type of page"
+                )
+                
                 submit = st.form_submit_button("💾 Add URL", use_container_width=True)
                 
                 if submit:
                     if url and title and h1:
                         h2_list = [h.strip() for h in h2_input.split('\n') if h.strip()]
-                        st.session_state.db.add_url(url, h1, h2_list, title, meta_desc)
+                        st.session_state.db.add_url(url, h1, h2_list, title, meta_desc, page_type)
                         st.success("✅ URL added successfully!")
                         st.rerun()
                     else:
@@ -614,15 +719,37 @@ def main():
         with st.expander("📋 View All URLs", expanded=False):
             urls = st.session_state.db.get_all_urls()
             if urls:
+                # Group by page type
+                urls_by_type = {}
                 for url, data in urls.items():
-                    col1, col2 = st.columns([4, 1])
-                    with col1:
-                        st.markdown(f"**{data.get('title', 'No title')}**")
-                        st.caption(url)
-                    with col2:
-                        if st.button("🗑️", key=f"del_{url}"):
-                            st.session_state.db.delete_url(url)
-                            st.rerun()
+                    page_type = data.get('page_type', 'Other')
+                    if page_type not in urls_by_type:
+                        urls_by_type[page_type] = []
+                    urls_by_type[page_type].append((url, data))
+                
+                # Show counts by type
+                st.markdown("**📊 By Type:**")
+                type_counts = {pt: len(urls) for pt, urls in urls_by_type.items()}
+                cols = st.columns(len(type_counts))
+                for idx, (page_type, count) in enumerate(type_counts.items()):
+                    with cols[idx]:
+                        st.metric(page_type, count)
+                
+                st.markdown("---")
+                
+                # Show URLs grouped by type
+                for page_type, url_list in sorted(urls_by_type.items()):
+                    st.markdown(f"**{page_type} ({len(url_list)})**")
+                    for url, data in url_list:
+                        col1, col2 = st.columns([4, 1])
+                        with col1:
+                            st.markdown(f"📄 **{data.get('title', 'No title')}**")
+                            st.caption(url)
+                        with col2:
+                            if st.button("🗑️", key=f"del_{url}"):
+                                st.session_state.db.delete_url(url)
+                                st.rerun()
+                    st.markdown("---")
             else:
                 st.info("No URLs added yet")
         
@@ -631,145 +758,172 @@ def main():
                 st.session_state.db.clear_all()
                 st.rerun()
     
-    # Main content
-    tab1, tab2 = st.tabs(["📝 Content Analysis", "📊 Results"])
+    # Main content area - SPLIT VIEW
+    st.subheader("📝 Content Analysis & Link Suggestions")
     
-    with tab1:
-        st.subheader("Paste Your Content")
+    # Two column layout
+    col_editor, col_suggestions = st.columns([1.2, 1], gap="large")
+    
+    with col_editor:
+        st.markdown("### 📄 Your Content")
         
         content = st.text_area(
-            "Content to analyze",
-            height=300,
-            placeholder="Paste your article or content here...",
-            help="Paste the content you want to add internal links to"
+            "Paste your content here",
+            height=500,
+            placeholder="Paste your article or content here...\n\nThe tool will analyze and suggest relevant internal links from all your page types (blog, products, glossary, guides, etc.)",
+            help="Paste the content you want to add internal links to",
+            key="content_editor"
         )
         
-        col1, col2 = st.columns([1, 3])
+        col1, col2 = st.columns([1, 2])
         with col1:
-            max_suggestions = st.slider("Max suggestions", 5, 20, 15)
+            max_suggestions = st.slider("Max suggestions", 5, 25, 15)
         
-        if st.button("🔍 Analyze & Generate Suggestions", type="primary", use_container_width=True):
-            if not content:
-                st.error("⚠️ Please paste some content first")
-            elif url_count == 0:
-                # Check if there's an uploaded file
-                file_info = get_uploaded_file_info()
-                if file_info['exists']:
-                    st.error("⚠️ File uploaded but URLs not loaded into database!")
-                    st.info("👉 Go to sidebar → 'Upload Excel/CSV File' → Click '📥 LOAD URLs FROM FILE'")
+        with col2:
+            if st.button("🔍 Analyze & Generate Suggestions", type="primary", use_container_width=True):
+                if not content:
+                    st.error("⚠️ Please paste some content first")
+                elif url_count == 0:
+                    # Check if there's an uploaded file
+                    file_info = get_uploaded_file_info()
+                    if file_info['exists']:
+                        st.error("⚠️ File uploaded but URLs not loaded into database!")
+                        st.info("👉 Go to sidebar → 'Upload Excel/CSV File' → Click '📥 LOAD URLs FROM FILE'")
+                    else:
+                        st.error("⚠️ Please add URLs to the database first")
+                        st.info("👉 Upload a file or add URLs manually in the sidebar")
                 else:
-                    st.error("⚠️ Please add URLs to the database first")
-                    st.info("👉 Upload a file or add URLs manually in the sidebar")
-            else:
-                with st.spinner("🔍 Analyzing content..."):
-                    urls = st.session_state.db.get_all_urls()
-                    suggestions = st.session_state.suggester.generate_suggestions(
-                        content, urls, max_suggestions
-                    )
-                    st.session_state.suggestions = suggestions
-                    st.session_state.accepted_links = []
-                    st.session_state.rejected_links = []
-                    st.session_state.current_content = content
-                
-                st.success(f"✅ Found {len(suggestions)} relevant link opportunities!")
-                st.info("👉 Switch to the 'Results' tab to review suggestions")
-    
-    with tab2:
-        if st.session_state.suggestions:
-            st.subheader(f"📊 Link Suggestions ({len(st.session_state.suggestions)} found)")
+                    with st.spinner("🤖 Analyzing content..."):
+                        urls = st.session_state.db.get_all_urls()
+                        suggestions = st.session_state.suggester.generate_suggestions(
+                            content, urls, max_suggestions
+                        )
+                        st.session_state.suggestions = suggestions
+                        st.session_state.accepted_links = []
+                        st.session_state.rejected_links = []
+                        st.session_state.current_content = content
+                    
+                    st.success(f"✅ Found {len(suggestions)} relevant link opportunities!")
+        
+        # Show current content with accepted links highlighted
+        if st.session_state.accepted_links and hasattr(st.session_state, 'current_content'):
+            st.markdown("---")
+            st.markdown("### ✅ Content with Accepted Links")
             
+            # Create preview with accepted links
+            final_content = st.session_state.current_content
+            accepted_suggestions = [s for s in st.session_state.suggestions 
+                                  if s['url'] in st.session_state.accepted_links]
+            
+            for suggestion in accepted_suggestions:
+                anchor = suggestion['anchor_text']
+                url = suggestion['url']
+                link_html = f'<a href="{url}" style="color: #2E86AB; font-weight: bold;">{anchor}</a>'
+                final_content = final_content.replace(anchor, link_html, 1)
+            
+            st.markdown(final_content, unsafe_allow_html=True)
+            
+            st.download_button(
+                "💾 Download HTML Document",
+                final_content,
+                file_name="document_with_links.html",
+                mime="text/html",
+                use_container_width=True
+            )
+    
+    with col_suggestions:
+        st.markdown("### 🔗 Link Suggestions")
+        
+        if st.session_state.suggestions:
+            # Summary metrics
             col1, col2, col3 = st.columns(3)
             with col1:
-                st.metric("Total Suggestions", len(st.session_state.suggestions))
+                st.metric("Total", len(st.session_state.suggestions))
             with col2:
-                st.metric("Accepted", len(st.session_state.accepted_links))
+                st.metric("✅", len(st.session_state.accepted_links))
             with col3:
-                st.metric("Rejected", len(st.session_state.rejected_links))
+                st.metric("❌", len(st.session_state.rejected_links))
             
-            st.divider()
+            st.markdown("---")
             
-            # Display suggestions
-            for idx, suggestion in enumerate(st.session_state.suggestions):
-                if suggestion['url'] in st.session_state.rejected_links:
-                    continue
-                
-                if suggestion['url'] in st.session_state.accepted_links:
-                    st.success(f"✅ Accepted: {suggestion['anchor_text']} → {suggestion['url']}")
-                    continue
-                
-                score = suggestion['score']
-                if score >= 0.6:
-                    score_class = "score-high"
-                    score_label = "High Relevance"
-                elif score >= 0.4:
-                    score_class = "score-medium"
-                    score_label = "Medium Relevance"
-                else:
-                    score_class = "score-low"
-                    score_label = "Low Relevance"
-                
-                st.markdown(f"""
-                <div class="suggestion-card">
-                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
-                        <h3 style="margin: 0;">Suggestion #{idx + 1}</h3>
-                        <span class="score-badge {score_class}">{score_label} ({score:.2%})</span>
+            # Scrollable suggestions area
+            suggestions_container = st.container()
+            
+            with suggestions_container:
+                for idx, suggestion in enumerate(st.session_state.suggestions):
+                    if suggestion['url'] in st.session_state.rejected_links:
+                        continue
+                    
+                    if suggestion['url'] in st.session_state.accepted_links:
+                        st.success(f"✅ **{suggestion['anchor_text']}**")
+                        st.caption(f"→ {suggestion['url']}")
+                        st.markdown("---")
+                        continue
+                    
+                    # Score badge
+                    score = suggestion['score']
+                    if score >= 0.6:
+                        score_class = "score-high"
+                        score_label = "High"
+                        score_emoji = "🟢"
+                    elif score >= 0.4:
+                        score_class = "score-medium"
+                        score_label = "Medium"
+                        score_emoji = "🟡"
+                    else:
+                        score_class = "score-low"
+                        score_label = "Low"
+                        score_emoji = "🟠"
+                    
+                    # Compact suggestion card
+                    st.markdown(f"""
+                    <div style="background: #f8f9fa; padding: 0.75rem; border-radius: 8px; border-left: 4px solid #2E86AB; margin-bottom: 0.75rem;">
+                        <div style="display: flex; justify-content: space-between; align-items: center;">
+                            <strong>#{idx + 1}</strong>
+                            <span class="score-badge {score_class}">{score_emoji} {score_label} {score:.0%}</span>
+                        </div>
                     </div>
-                </div>
-                """, unsafe_allow_html=True)
-                
-                col1, col2 = st.columns([2, 1])
-                
-                with col1:
-                    st.markdown(f"**Anchor Text:** `{suggestion['anchor_text']}`")
-                    st.markdown(f"**Target URL:** {suggestion['url']}")
-                    st.markdown(f"**Target Page:** {suggestion['target_title']}")
+                    """, unsafe_allow_html=True)
                     
-                    with st.expander("📄 Context Preview"):
+                    st.markdown(f"**Anchor:** `{suggestion['anchor_text']}`")
+                    st.caption(f"**Page:** {suggestion['target_title']}")
+                    st.caption(f"**URL:** {suggestion['url']}")
+                    
+                    # Page type indicator if available
+                    page_type = suggestion.get('page_type', 'Unknown')
+                    if page_type != 'Unknown':
+                        st.caption(f"📑 **Type:** {page_type}")
+                    
+                    with st.expander("👁️ Context"):
                         st.write(suggestion['context'])
-                
-                with col2:
-                    st.write("")
-                    st.write("")
-                    col_a, col_b = st.columns(2)
                     
+                    col_a, col_b = st.columns(2)
                     with col_a:
-                        if st.button("✅ Accept", key=f"accept_{idx}", use_container_width=True):
+                        if st.button("✅", key=f"accept_{idx}", use_container_width=True):
                             st.session_state.accepted_links.append(suggestion['url'])
                             st.rerun()
                     
                     with col_b:
-                        if st.button("❌ Reject", key=f"reject_{idx}", use_container_width=True):
+                        if st.button("❌", key=f"reject_{idx}", use_container_width=True):
                             st.session_state.rejected_links.append(suggestion['url'])
                             st.rerun()
-                
-                st.divider()
-            
-            # Generate final document
-            if st.session_state.accepted_links:
-                st.subheader("📄 Final Document")
-                
-                final_content = st.session_state.current_content
-                
-                accepted_suggestions = [s for s in st.session_state.suggestions 
-                                      if s['url'] in st.session_state.accepted_links]
-                
-                for suggestion in accepted_suggestions:
-                    anchor = suggestion['anchor_text']
-                    url = suggestion['url']
-                    link_html = f'<a href="{url}">{anchor}</a>'
-                    final_content = final_content.replace(anchor, link_html, 1)
-                
-                st.code(final_content, language="html")
-                
-                st.download_button(
-                    "💾 Download HTML Document",
-                    final_content,
-                    file_name="document_with_links.html",
-                    mime="text/html",
-                    use_container_width=True
-                )
+                    
+                    st.markdown("---")
         else:
-            st.info("👈 Analyze your content first to see suggestions here")
+            st.info("👈 Paste content and click 'Analyze' to see suggestions here")
+            
+            # Show example of what suggestions will look like
+            st.markdown("### Example Suggestion")
+            st.markdown("""
+            <div style="background: #f8f9fa; padding: 0.75rem; border-radius: 8px; border-left: 4px solid #2E86AB;">
+                <strong>#1</strong> <span style="background: #d4edda; color: #155724; padding: 0.25rem 0.5rem; border-radius: 12px; font-size: 0.85rem;">🟢 High 85%</span>
+            </div>
+            """, unsafe_allow_html=True)
+            st.markdown("**Anchor:** `keyword research`")
+            st.caption("**Page:** Keyword Research Guide")
+            st.caption("**Type:** Guide")
+            st.caption("**Context:** Finding the right keywords...")
+
 
 if __name__ == "__main__":
     main()
