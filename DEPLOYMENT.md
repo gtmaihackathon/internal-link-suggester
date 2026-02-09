@@ -1,416 +1,311 @@
-# 🚀 Deployment Guide
+# 🔧 Deployment Error Fix Guide
 
-Complete step-by-step guide to deploy your Internal Link Suggester app.
+## Error: "installer returned a non-zero exit code"
 
-## Option 1: Deploy to Streamlit Cloud (Recommended - FREE)
+This error occurs during Streamlit Cloud deployment when dependencies fail to install.
 
-### Prerequisites
-- GitHub account
-- Git installed on your computer
+## ✅ SOLUTION - Updated requirements.txt
 
-### Step-by-Step Instructions
+I've created **3 versions** of requirements.txt. Use them in this order:
 
-#### 1. Prepare Your Repository
+### Option 1: Minimal (Recommended for Streamlit Cloud) ⭐
+**File: `requirements.txt` (already updated)**
 
-**Create a new repository on GitHub:**
-1. Go to [github.com](https://github.com)
-2. Click the "+" icon → "New repository"
-3. Name it: `internal-link-suggester`
-4. Keep it Public (required for free Streamlit hosting)
-5. Don't initialize with README (we already have files)
-6. Click "Create repository"
-
-**Push your code to GitHub:**
-```bash
-# Navigate to your project folder
-cd path/to/internal-link-suggester
-
-# Initialize git (if not already done)
-git init
-
-# Add all files
-git add .
-
-# Commit
-git commit -m "Initial commit - Internal Link Suggester"
-
-# Add remote
-git remote add origin https://github.com/YOUR_USERNAME/internal-link-suggester.git
-
-# Push to GitHub
-git branch -M main
-git push -u origin main
+```
+streamlit
+sentence-transformers
+scikit-learn
+pandas
 ```
 
-#### 2. Deploy on Streamlit Cloud
+This version:
+- ✅ Lets pip auto-resolve compatible versions
+- ✅ Works on Streamlit Cloud free tier
+- ✅ Installs in ~3-5 minutes
+- ✅ ~500MB total size
 
-**Sign up and deploy:**
-1. Go to [share.streamlit.io](https://share.streamlit.io)
-2. Click "Sign up with GitHub"
-3. Authorize Streamlit to access your GitHub
-4. Click "New app"
-5. Fill in the form:
-   - **Repository**: `YOUR_USERNAME/internal-link-suggester`
-   - **Branch**: `main`
-   - **Main file path**: `app.py`
-6. Click "Deploy!"
+### Option 2: With Version Ranges (If Option 1 fails)
+**File: `requirements-with-versions.txt`**
 
-**Wait for deployment:**
-- Initial deployment takes 3-5 minutes
-- The AI model (~80MB) will be downloaded
-- You'll see a progress bar
-
-**Your app is live! 🎉**
-- URL: `https://YOUR_USERNAME-internal-link-suggester.streamlit.app`
-- Share this URL with anyone
-
-#### 3. Post-Deployment
-
-**Test your app:**
-1. Add a few URLs to the database
-2. Paste sample content
-3. Generate suggestions
-4. Accept/reject links
-5. Download the final document
-
-**Monitor usage:**
-- Streamlit Cloud dashboard shows app usage
-- Check logs if something goes wrong
-
----
-
-## Option 2: Run Locally
-
-### For Development and Testing
-
-#### Windows
-
-```bash
-# Install Python 3.9 or higher
-# Download from python.org
-
-# Clone repository
-git clone https://github.com/YOUR_USERNAME/internal-link-suggester.git
-cd internal-link-suggester
-
-# Create virtual environment
-python -m venv venv
-venv\Scripts\activate
-
-# Install dependencies
-pip install -r requirements.txt
-
-# Run app
-streamlit run app.py
+```
+streamlit>=1.28.0
+sentence-transformers>=2.2.0
+scikit-learn>=1.3.0
+pandas>=2.0.0
 ```
 
-#### Mac/Linux
+### Option 3: Exact Versions (For local development)
+**File: `requirements-exact.txt`**
 
-```bash
-# Clone repository
-git clone https://github.com/YOUR_USERNAME/internal-link-suggester.git
-cd internal-link-suggester
-
-# Create virtual environment
-python3 -m venv venv
-source venv/bin/activate
-
-# Install dependencies
-pip install -r requirements.txt
-
-# Run app
-streamlit run app.py
 ```
-
-**Access the app:**
-- Open browser: `http://localhost:8501`
-
----
-
-## Option 3: Deploy to Other Platforms
-
-### Heroku
-
-**1. Create `setup.sh`:**
-```bash
-mkdir -p ~/.streamlit/
-
-echo "\
-[server]\n\
-headless = true\n\
-port = $PORT\n\
-enableCORS = false\n\
-\n\
-" > ~/.streamlit/config.toml
-```
-
-**2. Create `Procfile`:**
-```
-web: sh setup.sh && streamlit run app.py
-```
-
-**3. Deploy:**
-```bash
-heroku create your-app-name
-git push heroku main
-```
-
-### Google Cloud Run
-
-**1. Create `Dockerfile`:**
-```dockerfile
-FROM python:3.9-slim
-
-WORKDIR /app
-
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-
-COPY . .
-
-EXPOSE 8080
-
-CMD streamlit run app.py --server.port=8080 --server.address=0.0.0.0
-```
-
-**2. Deploy:**
-```bash
-gcloud run deploy internal-link-suggester \
-  --source . \
-  --platform managed \
-  --region us-central1 \
-  --allow-unauthenticated
-```
-
-### AWS Elastic Beanstalk
-
-**1. Install EB CLI:**
-```bash
-pip install awsebcli
-```
-
-**2. Initialize and deploy:**
-```bash
-eb init -p python-3.9 internal-link-suggester
-eb create internal-link-env
-eb deploy
+streamlit==1.31.0
+sentence-transformers==2.3.1
+torch==2.1.2
+numpy==1.24.3
+scikit-learn==1.3.2
+pandas==2.1.4
 ```
 
 ---
 
-## 🔧 Configuration
+## 🚀 How to Fix Your Deployment
 
-### Environment Variables
+### Step 1: Update Your GitHub Repository
 
-If you need to add environment variables on Streamlit Cloud:
+**Replace your requirements.txt with the minimal version:**
 
-1. Go to your app dashboard
-2. Click "Settings"
-3. Click "Secrets"
-4. Add variables in TOML format:
-```toml
-# Example secrets
-api_key = "your_api_key"
-database_url = "your_db_url"
-```
-
-### Custom Domain
-
-**Streamlit Cloud:**
-1. App settings → General
-2. Add custom domain
-3. Configure DNS CNAME record
-
----
-
-## 📊 Performance Optimization
-
-### For Streamlit Cloud
-
-**Free tier limits:**
-- 1 GB RAM
-- 1 CPU core
-- Unlimited apps (public)
-
-**Optimization tips:**
-1. Use `@st.cache_resource` for model loading
-2. Limit max_suggestions to 15
-3. Keep URL database under 1000 entries
-4. Use efficient data structures
-
-### For High Traffic
-
-If you expect >1000 users/day:
-1. Upgrade to Streamlit Cloud Pro ($20/month)
-2. Deploy to dedicated hosting
-3. Add caching layer (Redis)
-4. Implement rate limiting
-
----
-
-## 🐛 Troubleshooting
-
-### Common Issues
-
-**1. Model download timeout**
-```
-Solution: Redeploy the app. First deployment might timeout.
-```
-
-**2. Memory errors**
-```
-Solution: Reduce max_suggestions or upgrade plan
-```
-
-**3. Database not persisting**
-```
-Solution: Check file permissions, ensure url_database.json is writable
-```
-
-**4. App crashes on large content**
-```
-Solution: Split content into smaller chunks (<5000 words)
-```
-
-### Debugging
-
-**Check logs:**
-- Streamlit Cloud: Dashboard → Logs
-- Local: Check terminal output
-
-**Enable debug mode:**
-```python
-# In app.py
-import streamlit as st
-st.set_option('client.showErrorDetails', True)
-```
-
----
-
-## 🔄 Updating Your App
-
-### Deploy Updates
-
-**Method 1: Push to GitHub**
 ```bash
-git add .
-git commit -m "Update: Added new features"
+# In your local project folder
+# Delete old requirements.txt
+rm requirements.txt
+
+# Copy the new one (it's already in your downloads)
+# Or create it manually with these 4 lines:
+echo "streamlit" > requirements.txt
+echo "sentence-transformers" >> requirements.txt
+echo "scikit-learn" >> requirements.txt
+echo "pandas" >> requirements.txt
+
+# Commit and push
+git add requirements.txt
+git commit -m "Fix: Updated requirements.txt for Streamlit Cloud"
 git push origin main
 ```
-Streamlit Cloud auto-deploys on push!
 
-**Method 2: Manual redeploy**
-1. Go to app dashboard
-2. Click "Reboot app"
+### Step 2: Redeploy on Streamlit Cloud
+
+**Streamlit Cloud auto-deploys when you push to GitHub!**
+
+1. Wait 30 seconds for GitHub to process your push
+2. Go to your Streamlit Cloud dashboard: https://share.streamlit.io
+3. Your app will automatically start redeploying
+4. Watch the logs - should succeed in 3-5 minutes
+
+**OR manually trigger redeploy:**
+
+1. Go to your app dashboard
+2. Click the ⋮ menu (three dots)
+3. Click "Reboot app"
+4. Wait for deployment
 
 ---
 
-## 📈 Monitoring
+## 📊 Deployment Timeline
 
-### Streamlit Cloud Analytics
+```
+✅ Push to GitHub                    (30 seconds)
+✅ Streamlit detects change          (30 seconds)
+✅ Install dependencies              (3-5 minutes)
+   ├─ streamlit                     (~1 min)
+   ├─ sentence-transformers         (~2 min)
+   ├─ scikit-learn                  (~1 min)
+   └─ pandas                        (~30 sec)
+✅ Download AI model                 (~1 minute)
+✅ App starts                        (~30 seconds)
 
-**Available metrics:**
-- Daily active users
-- Session duration
-- Error rates
-- Resource usage
+Total: 5-8 minutes
+```
 
-**Access analytics:**
-1. App dashboard
-2. Click "Analytics"
-3. View charts and logs
+---
 
-### Custom Analytics
+## 🐛 Common Errors & Solutions
 
-Add Google Analytics:
+### Error 1: Memory Limit Exceeded
+```
+Error: Your app has exceeded the memory limit
+```
+
+**Solution:**
 ```python
-# In app.py
-st.components.v1.html("""
-<script async src="https://www.googletagmanager.com/gtag/js?id=GA_MEASUREMENT_ID"></script>
-<script>
-  window.dataLayer = window.dataLayer || [];
-  function gtag(){dataLayer.push(arguments);}
-  gtag('js', new Date());
-  gtag('config', 'GA_MEASUREMENT_ID');
-</script>
-""", height=0)
+# Add to app.py at the top
+import streamlit as st
+st.set_page_config(layout="wide")
+
+# Reduce max_suggestions default
+max_suggestions = st.slider("Max suggestions", 5, 15, 10)  # Changed from 15 to 10
+```
+
+### Error 2: Torch Installation Timeout
+```
+Error: Could not install torch
+```
+
+**Solution:** Remove version constraints (already done in new requirements.txt)
+
+### Error 3: Model Download Fails
+```
+Error downloading sentence-transformers model
+```
+
+**Solution:** Model downloads automatically on first run. Just wait or redeploy.
+
+---
+
+## 🔍 Check Deployment Logs
+
+**To see detailed error messages:**
+
+1. Go to https://share.streamlit.io
+2. Click on your app
+3. Look at the right side: "Logs" section
+4. Find the exact error line
+
+**Common log messages:**
+
+```
+✅ "Collecting streamlit"              - Installing dependencies
+✅ "Successfully installed"            - Dependencies installed
+✅ "Downloading model"                 - AI model downloading
+✅ "You can now view your app"         - SUCCESS!
+
+❌ "ERROR: Could not install"          - Dependency conflict
+❌ "MemoryError"                       - Out of memory
+❌ "TimeoutError"                      - Installation too slow
 ```
 
 ---
 
-## 💰 Cost Estimation
+## 💡 Prevention Tips
 
-### Streamlit Cloud
-- **Free tier**: $0/month
-  - Unlimited public apps
-  - 1 GB RAM per app
-  - Community support
+### For Streamlit Cloud Deployment
 
-- **Pro tier**: $20/month
-  - Private apps
-  - 4 GB RAM
-  - Priority support
+**DO:**
+- ✅ Use minimal requirements (no version numbers)
+- ✅ Test locally first
+- ✅ Keep repository clean
+- ✅ Use .gitignore properly
 
-### Other Platforms
-- **Heroku**: $7-25/month
-- **Google Cloud Run**: Pay-per-use (~$5-20/month)
-- **AWS**: $10-50/month (depends on usage)
+**DON'T:**
+- ❌ Pin exact versions unless necessary
+- ❌ Include large files in repo
+- ❌ Use GPU-specific packages
+- ❌ Commit virtual environments
 
 ---
 
-## 🔐 Security Best Practices
+## 🆘 Still Not Working?
 
-1. **Keep dependencies updated**
+### Try These Steps in Order:
+
+**1. Clear Streamlit Cache**
+```
+Dashboard → Your App → ⋮ → Clear cache
+```
+
+**2. Completely Redeploy**
+```
+Dashboard → Your App → ⋮ → Delete app
+Then: New app → Select repository again
+```
+
+**3. Check Python Version**
+Streamlit Cloud uses Python 3.9-3.11. Your code should work on these versions.
+
+**4. Test Locally First**
 ```bash
-pip install --upgrade -r requirements.txt
+# Create fresh virtual environment
+python -m venv venv
+source venv/bin/activate  # or venv\Scripts\activate on Windows
+
+# Install from new requirements.txt
+pip install -r requirements.txt
+
+# Test
+streamlit run app.py
+
+# If works locally, will work on cloud
 ```
 
-2. **Don't commit secrets**
-   - Use `.gitignore`
-   - Use environment variables
-   - Use Streamlit secrets
+---
 
-3. **Validate user input**
-   - Already implemented in the app
-   - Add rate limiting for production
+## 📞 Get Help
 
-4. **HTTPS only**
-   - Streamlit Cloud provides free HTTPS
-   - Configure SSL for custom domains
+**If still failing after trying all solutions:**
+
+1. **Check Streamlit Status**
+   - Go to: https://status.streamlit.io
+   - See if there are platform issues
+
+2. **Post on Forum**
+   - Go to: https://discuss.streamlit.io
+   - Title: "Deployment Error: installer returned non-zero exit code"
+   - Include: Your requirements.txt and error logs
+
+3. **GitHub Issue**
+   - Check: https://github.com/streamlit/streamlit/issues
+   - Search for similar errors
 
 ---
 
-## 📞 Support
+## ✅ Verification Checklist
 
-**Getting help:**
-- 📧 GitHub Issues
-- 💬 Streamlit Community Forum
-- 📖 Streamlit Documentation
+After updating requirements.txt, verify:
 
-**Useful links:**
-- [Streamlit Docs](https://docs.streamlit.io)
-- [Deployment Guide](https://docs.streamlit.io/streamlit-community-cloud/get-started)
-- [Community Forum](https://discuss.streamlit.io)
-
----
-
-## ✅ Deployment Checklist
-
-Before going live:
-
-- [ ] Test all features locally
-- [ ] Add sample data
-- [ ] Push to GitHub
-- [ ] Deploy to Streamlit Cloud
-- [ ] Test deployed app
-- [ ] Add custom domain (optional)
-- [ ] Set up monitoring
-- [ ] Share URL with users
-- [ ] Gather feedback
-- [ ] Iterate and improve
+- [ ] Only 4 lines in requirements.txt
+- [ ] No version numbers (just package names)
+- [ ] Committed to GitHub
+- [ ] Pushed to main branch
+- [ ] Streamlit Cloud detected change
+- [ ] Logs show "Successfully installed"
+- [ ] App starts without errors
 
 ---
 
-**Need help? Open an issue on GitHub!**
+## 🎯 Expected Success
 
-Happy deploying! 🚀
+With the new **minimal requirements.txt**, you should see:
+
+```
+[Logs]
+Collecting streamlit
+  Downloading streamlit-1.32.0...
+Successfully installed streamlit-1.32.0
+
+Collecting sentence-transformers
+  Downloading sentence_transformers-2.5.1...
+Successfully installed sentence-transformers-2.5.1
+
+Collecting scikit-learn
+  Downloading scikit_learn-1.4.0...
+Successfully installed scikit-learn-1.4.0
+
+Collecting pandas
+  Downloading pandas-2.2.0...
+Successfully installed pandas-2.2.0
+
+Installing dependencies... ✅
+Starting app... ✅
+Downloading model 'all-MiniLM-L6-v2'... ✅
+Your app is now running! ✅
+```
+
+Then your app will be live at:
+```
+https://YOUR_USERNAME-internal-link-suggester.streamlit.app
+```
+
+---
+
+## 📝 Summary
+
+**What Changed:**
+- Old: 6 packages with exact versions
+- New: 4 packages without version constraints
+
+**Why This Fixes It:**
+- Streamlit Cloud can auto-select compatible versions
+- Reduces dependency conflicts
+- Faster installation
+- Better compatibility
+
+**Next Steps:**
+1. Use new requirements.txt
+2. Push to GitHub
+3. Wait 5-8 minutes
+4. App should deploy successfully ✅
+
+---
+
+**Your deployment should work now! 🚀**
+
+Questions? Check the logs and refer back to this guide.
